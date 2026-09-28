@@ -1,0 +1,140 @@
+name: Parallel Wayfair Scraper
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_categories:
+        description: 'Max categories per URL (leave empty for full scrape)'
+        required: false
+        default: ''
+      delay:
+        description: 'Delay between requests in seconds'
+        required: false
+        default: '1.0'
+  # Uncomment below to run periodically on a schedule (e.g. weekly UTC)
+  # schedule:
+  #   - cron: '0 0 * * 0'
+
+jobs:
+  scrape:
+    name: Scrape (${{ matrix.target.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 720 # GitHub max runner limit is 12 hours
+
+    strategy:
+      fail-fast: false # If one URL encounters an error, the other jobs continue running
+      matrix:
+        target:
+          - name: "furniture"
+            url: "https://www.wayfair.com/furniture/cat/furniture-c45974.html"
+            excel_file: "wayfair_furniture_filters.xlsx"
+            csv_file: "wayfair_furniture_filters.csv"
+
+          - name: "outdoor"
+            url: "https://www.wayfair.com/outdoor/cat/outdoor-c32334.html"
+            excel_file: "wayfair_outdoor_filters.xlsx"
+            csv_file: "wayfair_outdoor_filters.csv"
+
+          - name: "bed_bath"
+            url: "https://www.wayfair.com/bed-bath/cat/bed-bath-c215329.html"
+            excel_file: "wayfair_bed_bath_filters.xlsx"
+            csv_file: "wayfair_bed_bath_filters.csv"
+
+          - name: "mattresses"
+            url: "https://www.wayfair.com/bed-bath/cat/mattresses-foundations-c414871.html"
+            excel_file: "wayfair_mattresses_filters.xlsx"
+            csv_file: "wayfair_mattresses_filters.csv"
+
+          - name: "rugs"
+            url: "https://www.wayfair.com/rugs/cat/rugs-c215385.html"
+            excel_file: "wayfair_rugs_filters.xlsx"
+            csv_file: "wayfair_rugs_filters.csv"
+
+          - name: "decor_pillows"
+            url: "https://www.wayfair.com/decor-pillows/cat/decor-pillows-c45752.html"
+            excel_file: "wayfair_decor_pillows_filters.xlsx"
+            csv_file: "wayfair_decor_pillows_filters.csv"
+
+          - name: "lighting"
+            url: "https://www.wayfair.com/lighting/cat/lighting-c215735.html"
+            excel_file: "wayfair_lighting_filters.xlsx"
+            csv_file: "wayfair_lighting_filters.csv"
+
+          - name: "organization"
+            url: "https://www.wayfair.com/storage-organization/cat/storage-organization-c215875.html"
+            excel_file: "wayfair_organization_filters.xlsx"
+            csv_file: "wayfair_organization_filters.csv"
+
+          - name: "kitchen"
+            url: "https://www.wayfair.com/kitchen-tabletop/cat/kitchen-tabletop-c45667.html"
+            excel_file: "wayfair_kitchen_filters.xlsx"
+            csv_file: "wayfair_kitchen_filters.csv"
+
+          - name: "baby_kids"
+            url: "https://www.wayfair.com/baby-kids/cat/baby-kids-c45226.html"
+            excel_file: "wayfair_baby_kids_filters.xlsx"
+            csv_file: "wayfair_baby_kids_filters.csv"
+
+          - name: "home_improvement"
+            url: "https://www.wayfair.com/home-improvement/cat/home-improvement-c45342.html"
+            excel_file: "wayfair_home_improvement_filters.xlsx"
+            csv_file: "wayfair_home_improvement_filters.csv"
+
+          - name: "appliances"
+            url: "https://www.wayfair.com/appliances/cat/appliances-c215602.html"
+            excel_file: "wayfair_appliances_filters.xlsx"
+            csv_file: "wayfair_appliances_filters.csv"
+
+          - name: "pet"
+            url: "https://www.wayfair.com/pet/cat/pet-c504273.html"
+            excel_file: "wayfair_pet_filters.xlsx"
+            csv_file: "wayfair_pet_filters.csv"
+
+          - name: "holiday"
+            url: "https://www.wayfair.com/holiday-decor/cat/holiday-decor-c1859601.html"
+            excel_file: "wayfair_holiday_filters.xlsx"
+            csv_file: "wayfair_holiday_filters.csv"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Scraper for ${{ matrix.target.name }}
+        env:
+          # Uses repository secret if configured, otherwise falls back to your Zyte key
+          ZYTE_API_KEY: ${{ secrets.ZYTE_API_KEY || '62eb8bf11a3e433aad5a8cdbcbccfe69' }}
+        run: |
+          EXTRA_ARGS=""
+          if [ -n "${{ github.event.inputs.max_categories }}" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --max-categories ${{ github.event.inputs.max_categories }}"
+          fi
+          if [ -n "${{ github.event.inputs.delay }}" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --delay ${{ github.event.inputs.delay }}"
+          fi
+
+          python wayfair_multi_url_filter_scraper.py \
+            --urls "${{ matrix.target.url }}" \
+            --output-excel "${{ matrix.target.excel_file }}" \
+            --output-csv "${{ matrix.target.csv_file }}" \
+            $EXTRA_ARGS
+
+      - name: Upload Scraped Results
+        uses: actions/upload-artifact@v4
+        if: always() # Upload outputs even if step is cancelled or fails
+        with:
+          name: wayfair-${{ matrix.target.name }}-results
+          path: |
+            ${{ matrix.target.excel_file }}
+            ${{ matrix.target.csv_file }}
+          if-no-files-found: warn
