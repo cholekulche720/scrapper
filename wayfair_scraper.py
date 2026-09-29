@@ -71,16 +71,14 @@ def mask_key(key: str) -> str:
     return f"{key[:4]}...{key[-4:]}"
 
 
+CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".zyte_key_cache.json")
+
+
 def create_session() -> requests.Session:
-    """Creates a requests session configured with retries for robust scraping."""
+    """Creates a requests session configured for rapid multi-key failover."""
     session = requests.Session()
-    retries = Retry(
-        total=3,
-        backoff_factor=1.5,
-        status_forcelist=[500, 502, 503, 504],
-        allowed_methods=["POST", "GET"]
-    )
-    adapter = HTTPAdapter(max_retries=retries)
+    # Disable internal retries so failed/timed out requests immediately rotate to the next Zyte key
+    adapter = HTTPAdapter(max_retries=False)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
     return session
@@ -91,10 +89,27 @@ class ZyteKeyResolver:
     Resolves the active Zyte API key.
     If provided with a Scrapinghub Master/Account Key, it automatically interacts
     with the Zyte Management API to fetch the active organization Zyte API token.
-    Caches resolved keys per input key in memory.
+    Caches resolved keys per input key in memory and on disk.
     """
     _cache: Dict[str, str] = {}
     _lock = threading.Lock()
+
+    @classmethod
+    def _load_disk_cache(cls):
+        if not cls._cache and os.path.exists(CACHE_FILE):
+            try:
+                with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                    cls._cache = json.load(f)
+            except Exception:
+                pass
+
+    @classmethod
+    def _save_disk_cache(cls):
+        try:
+            with open(CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump(cls._cache, f, indent=2)
+        except Exception:
+            pass
 
     @classmethod
     def resolve_key(cls, user_key: str) -> str:
@@ -103,6 +118,7 @@ class ZyteKeyResolver:
             return ""
 
         with cls._lock:
+            cls._load_disk_cache()
             if key in cls._cache:
                 return cls._cache[key]
 
@@ -120,6 +136,7 @@ class ZyteKeyResolver:
                 logger.info(f"Direct Zyte API key [{masked}] validated successfully.")
                 with cls._lock:
                     cls._cache[key] = key
+                    cls._save_disk_cache()
                 return key
         except Exception:
             pass
@@ -144,6 +161,8 @@ class ZyteKeyResolver:
                     if services_res.status_code == 200:
                         s_results = services_res.json().get("results", [])
                         for service in s_results:
+                            if service.get("state") != "active":
+                                continue
                             sid = service.get("id")
                             cred_res = requests.get(
                                 f"https://app.zyte.com/api/v2/zyteapi/{sid}/credentials?organization={org_id}",
@@ -156,12 +175,14 @@ class ZyteKeyResolver:
                                     logger.info(f"Resolved Zyte API Key for '{service.get('name')}' (Service ID: {sid}): [{mask_key(apikey)}]")
                                     with cls._lock:
                                         cls._cache[key] = apikey
+                                        cls._save_disk_cache()
                                     return apikey
         except Exception as e:
             logger.warning(f"Could not auto-resolve Zyte key [{masked}] via management API: {e}")
 
         with cls._lock:
             cls._cache[key] = key
+            cls._save_disk_cache()
         return key
 
 
@@ -1011,7 +1032,8 @@ class WayfairScraperEngine:
         """
         payload = {
             "url": target_url,
-            "browserHtml": True
+            "httpResponseBody": True,
+            "geolocation": "US"
         }
 
         attempts = 0
@@ -1043,10 +1065,15 @@ class WayfairScraperEngine:
 
                 if resp.status_code == 200:
                     data = resp.json()
+                    b64 = data.get("httpResponseBody")
+                    if b64:
+                        html = base64.b64decode(b64).decode("utf-8", errors="ignore")
+                        if html:
+                            return html
                     html = data.get("browserHtml", "")
                     if html:
                         return html
-                    logger.warning(f"Zyte API returned 200 but empty browserHtml with key [{masked}] for {target_url}. Retrying with next key...")
+                    logger.warning(f"Zyte API returned 200 but empty content with key [{masked}] for {target_url}. Retrying with next key...")
                     if len(tried_keys_for_this_url) >= self.key_pool.get_total_count():
                         return None
                     time.sleep(1)
