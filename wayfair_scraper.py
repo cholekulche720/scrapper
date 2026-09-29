@@ -1176,10 +1176,13 @@ class WayfairScraperEngine:
 
         if not filtered_urls:
             logger.info("All provided URLs have already been scraped! No Zyte requests needed.")
-            if output_file and self.append_existing and self.traversed_tracker.existing_records:
-                if not os.path.exists(output_file):
-                    write_output(self.traversed_tracker.existing_records, output_file)
-            return self.traversed_tracker.existing_records
+            if output_file:
+                if self.append_existing and self.traversed_tracker.existing_records:
+                    if not os.path.exists(output_file):
+                        write_output(self.traversed_tracker.existing_records, output_file)
+                elif not os.path.exists(output_file):
+                    write_output([], output_file)
+            return []
 
         total = len(filtered_urls)
         logger.info(
@@ -1350,8 +1353,10 @@ def main():
     # 5. Resolve and initialize Zyte API keys
     api_keys = collect_zyte_keys(cli_keys=args.api_keys, keys_file=args.api_keys_file)
 
-    # Determine append behavior: append if output matches existing file or if appending is not explicitly disabled
-    append_existing = not args.overwrite
+    # Append existing products ONLY if the output file is an already existing database file
+    # Shard files (shard_0.json, shard_1.json, etc.) must NEVER bundle the existing database records!
+    is_existing_output = os.path.exists(args.output) and (os.path.abspath(args.output) in [os.path.abspath(f) for f in files_to_check])
+    append_existing = is_existing_output and (not args.overwrite)
 
     # 6. Initialize Engine & Execute
     engine = WayfairScraperEngine(
