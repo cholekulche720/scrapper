@@ -1,0 +1,19 @@
+# ==============================================================================
+# Zyte API Keys List
+# ==============================================================================
+# Add all your Zyte API keys below, ONE KEY PER LINE.
+# 
+# How it works:
+# 1. The scraper automatically loads all keys from this file.
+# 2. Worker threads rotate through these keys across concurrent requests.
+# 3. If any key is exhausted (HTTP 402 out of credits, HTTP 401 unauthorized),
+#    the scraper marks it inactive and automatically retries the same URL
+#    with the next key in the list.
+# 4. Empty lines and lines starting with '#' are ignored.
+# ==============================================================================
+
+32983c28e53f4945b4a0eaf63dbeec92
+54b7aaa678204a8f93194c3b353bbcd6
+886eae4cbd1b4456a4c7c95dd8b534bb
+d9f43d3ce9914269ba8daf792e78f6e3
+aa4fd261d82c44ecb01f7e9fbab5bae5

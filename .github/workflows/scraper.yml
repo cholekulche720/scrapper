@@ -1,0 +1,134 @@
+name: Wayfair Distributed Scraper (Parallel Matrix)
+
+on:
+  workflow_dispatch:
+    inputs:
+      threads_per_worker:
+        description: 'Number of worker threads per runner (recommend 2-4)'
+        required: false
+        default: '3'
+      input_file:
+        description: 'Path to URLs text file'
+        required: false
+        default: 'urls.txt'
+      output_file:
+        description: 'Final combined output JSON filename'
+        required: false
+        default: 'wayfair_products.json'
+
+permissions:
+  contents: write
+
+jobs:
+  # ============================================================================
+  # 1. PARALLEL SCRAPING MATRIX (15 concurrent runner shards)
+  # ============================================================================
+  scrape:
+    name: Scrape Shard ${{ matrix.shard }}/15
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Shard Scraper
+        env:
+          ZYTE_API_KEY: ${{ secrets.ZYTE_API_KEY || '' }}
+        run: |
+          python wayfair_scraper.py \
+            --input "${{ github.event.inputs.input_file || 'urls.txt' }}" \
+            --output "shard_${{ matrix.shard }}.json" \
+            --threads "${{ github.event.inputs.threads_per_worker || '3' }}" \
+            --shard-index ${{ matrix.shard }} \
+            --shard-total 15
+
+      - name: Upload Shard Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shard-${{ matrix.shard }}
+          path: shard_${{ matrix.shard }}.json
+          retention-days: 7
+
+  # ============================================================================
+  # 2. MERGE JOB (Combines all shard JSONs into 1 final JSON)
+  # ============================================================================
+  merge:
+    name: Merge All Shards into Final JSON
+    needs: scrape
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download All Shard Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded_shards
+
+      - name: Inspect and Merge Shards
+        run: |
+          echo "Merging all downloaded shards..."
+          python wayfair_scraper.py \
+            --merge-dir downloaded_shards \
+            --output "${{ github.event.inputs.output_file || 'wayfair_products.json' }}"
+
+      - name: Upload Final Consolidated JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: wayfair-products-final
+          path: ${{ github.event.inputs.output_file || 'wayfair_products.json' }}
+          retention-days: 90
+
+      - name: Commit and Push Updated Results to Repository
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          out_file="${{ github.event.inputs.output_file || 'wayfair_products.json' }}"
+          git add "$out_file" || true
+          if git status --porcelain | grep -q "$out_file"; then
+            git commit -m "Auto-update $out_file from scraper workflow [skip ci]"
+            git push || echo "Git push not allowed or branch protected. Consolidated database is safely stored in artifacts."
+          else
+            echo "No changes in $out_file to commit."
+          fi
+
+      - name: Scrape Summary Report
+        run: |
+          python -c "
+          import json, os
+          out_file = '${{ github.event.inputs.output_file || 'wayfair_products.json' }}'
+          if os.path.exists(out_file):
+              with open(out_file, 'r', encoding='utf-8') as f:
+                  data = json.load(f)
+              total_records = len(data)
+              success_count = sum(1 for item in data if 'error' not in item)
+              print('========================================')
+              print(f'Total Scraped Records: {total_records}')
+              print(f'Successful Records:   {success_count}')
+              print(f'Failed Records:       {total_records - success_count}')
+              print('========================================')
+          else:
+              print('Output file not found.')
+          "
