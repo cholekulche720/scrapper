@@ -1,0 +1,10 @@
+# Add your ScrapingAnt API keys below (one per line).
+# Example:
+# 1234567890abcdef1234567890abcdef
+# abcdef1234567890abcdef1234567890
+
+20c00742d2b94401be7d5f65e3db1e6a
+0aa6fa43014d4ba5859ba7f77c8a3544
+be9876798aeb4eb596379df57d742eb0
+2a29260bd494475bbb2c79693d91d810
+05d97827499f4bc6b27cd747d5ef1b2b

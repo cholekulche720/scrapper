@@ -1,0 +1,130 @@
+name: Wayfair ScrapingAnt Distributed Scraper
+
+on:
+  workflow_dispatch:
+    inputs:
+      concurrency_per_runner:
+        description: 'Concurrent requests per runner (recommend 3-8)'
+        required: false
+        default: '5'
+      scrapingant_keys:
+        description: 'Comma-separated ScrapingAnt keys (leave empty to use scrapingant_keys.txt or secrets)'
+        required: false
+        default: ''
+      input_file:
+        description: 'Path to URLs text file'
+        required: false
+        default: 'urls.txt'
+      output_file:
+        description: 'Final combined output JSON filename'
+        required: false
+        default: 'wayfair_products.json'
+      max_urls:
+        description: 'Max URLs per shard to scrape (0 for all fresh URLs)'
+        required: false
+        default: '0'
+
+permissions:
+  contents: read
+
+jobs:
+  # ============================================================================
+  # 1. PARALLEL SCRAPING MATRIX (5 concurrent runners matching API keys)
+  # ============================================================================
+  scrape:
+    name: ScrapingAnt Shard ${{ matrix.shard }}/5
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt || pip install aiohttp beautifulsoup4
+
+      - name: Run Shard Scraper
+        env:
+          SCRAPINGANT_API_KEYS: ${{ github.event.inputs.scrapingant_keys || secrets.SCRAPINGANT_API_KEYS || secrets.SCRAPINGANT_API_KEY || '' }}
+        run: |
+          python wayfair_scrapingant_scraper.py \
+            --input "${{ github.event.inputs.input_file || 'urls.txt' }}" \
+            --output "shard_${{ matrix.shard }}.json" \
+            --ignore-files "${{ github.event.inputs.output_file || 'wayfair_products.json' }}" \
+            --concurrency "${{ github.event.inputs.concurrency_per_runner || '5' }}" \
+            --max-urls "${{ github.event.inputs.max_urls || '0' }}" \
+            --shard-index ${{ matrix.shard }} \
+            --shard-total 5
+
+      - name: Upload Shard Artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scrapingant-shard-${{ matrix.shard }}
+          path: shard_${{ matrix.shard }}.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ============================================================================
+  # 2. MERGE JOB (Combines all shards with existing database)
+  # ============================================================================
+  merge:
+    name: Merge Shards & Create Final Artifact
+    needs: scrape
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install beautifulsoup4 aiohttp
+
+      - name: Download All Shard Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./downloaded_shards
+
+      - name: Merge Shards
+        run: |
+          mkdir -p ./shards_ready
+          find ./downloaded_shards -type f -name "*.json" -exec cp {} ./shards_ready/ \;
+          
+          python wayfair_scrapingant_scraper.py \
+            --merge-dir ./shards_ready \
+            --output "${{ github.event.inputs.output_file || 'wayfair_products.json' }}" \
+            --ignore-files "${{ github.event.inputs.output_file || 'wayfair_products.json' }}"
+
+      - name: Upload Final Consolidated Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wayfair-scraped-products-final
+          path: ${{ github.event.inputs.output_file || 'wayfair_products.json' }}
+          retention-days: 90
+
+      - name: Workflow Summary
+        run: |
+          COUNT=$(python -c "import json; data=json.load(open('${{ github.event.inputs.output_file || 'wayfair_products.json' }}')); print(len(data))" 2>/dev/null || echo "0")
+          echo "==============================================================="
+          echo "✅ SCRAPING & MERGE COMPLETE!"
+          echo "📦 Total Products in Output: $COUNT"
+          echo "📥 Download the file from GitHub Actions Artifacts: wayfair-scraped-products-final"
+          echo "🔒 Repository was NOT modified directly. You can inspect and push manually."
+          echo "==============================================================="
