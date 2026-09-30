@@ -25,10 +25,15 @@ from typing import Dict, Any, List, Optional, Set, Tuple
 from urllib.parse import urlparse, parse_qs
 from bs4 import BeautifulSoup
 
-# Scrapy & Twisted imports
+# Install asyncio reactor for Scrapy and Playwright before importing Scrapy engine components
+from scrapy.utils.reactor import install_reactor
+try:
+    install_reactor("twisted.internet.asyncioreactor.AsyncioSelectorReactor")
+except Exception:
+    pass
+
 import scrapy
 from scrapy.crawler import CrawlerProcess
-from scrapy import signals
 from scrapy.utils.response import response_status_message
 
 logger = logging.getLogger("WayfairScrapy")
@@ -841,22 +846,22 @@ class WayfairProductSpider(scrapy.Spider):
 
     def __init__(
         self,
-        urls: List[str],
-        tracker: TraversedTracker,
+        urls: Optional[List[str]] = None,
+        tracker: Optional[TraversedTracker] = None,
         use_browser: bool = False,
         results_buffer: Optional[List[Dict[str, Any]]] = None,
         *args,
         **kwargs
     ):
         super().__init__(*args, **kwargs)
-        self.target_urls = urls
-        self.tracker = tracker
+        self.start_urls = urls or []
+        self.tracker = tracker or TraversedTracker()
         self.use_browser = use_browser
         self.results_buffer = results_buffer if results_buffer is not None else []
         self._lock = threading.Lock()
 
     def start_requests(self):
-        for raw_url in self.target_urls:
+        for raw_url in self.start_urls:
             pdp_url = normalize_pdp_url(raw_url)
             headers = {
                 "User-Agent": random.choice(DEFAULT_USER_AGENTS),
@@ -903,12 +908,12 @@ class WayfairProductSpider(scrapy.Spider):
                 url=pdp_url,
                 headers=headers,
                 meta=meta,
-                callback=self.parse_product,
+                callback=self.parse,
                 errback=self.handle_error,
                 dont_filter=True
             )
 
-    async def parse_product(self, response):
+    async def parse(self, response):
         raw_url = response.meta.get("raw_url")
         pdp_url = response.meta.get("pdp_url")
 
