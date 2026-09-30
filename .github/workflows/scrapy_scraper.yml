@@ -1,0 +1,168 @@
+name: Wayfair Scrapy Distributed Scraper
+
+on:
+  workflow_dispatch:
+    inputs:
+      concurrency_per_runner:
+        description: 'Concurrent requests per runner shard (recommend 3-6)'
+        required: false
+        default: '4'
+      use_browser:
+        description: 'Enable Playwright browser rendering for lazy-loaded dynamic data'
+        type: boolean
+        required: false
+        default: true
+      proxy_url:
+        description: 'Proxy URL (e.g. http://user:pass@host:port) - leave empty to use secrets.PROXY_URL'
+        required: false
+        default: ''
+      input_file:
+        description: 'Path to URLs text file'
+        required: false
+        default: 'urls.txt'
+      output_file:
+        description: 'Final combined output JSON filename'
+        required: false
+        default: 'wayfair_products.json'
+      max_urls:
+        description: 'Max URLs per shard to scrape (0 for all fresh URLs)'
+        required: false
+        default: '0'
+
+permissions:
+  contents: write
+
+jobs:
+  # ============================================================================
+  # 1. PARALLEL SCRAPY MATRIX (15 concurrent runner shards)
+  # ============================================================================
+  scrape:
+    name: Scrapy Shard ${{ matrix.shard }}/15
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Playwright Chromium & System Dependencies
+        if: ${{ github.event.inputs.use_browser != 'false' }}
+        run: |
+          python -m playwright install --with-deps chromium
+
+      - name: Run Shard Scrapy Crawler
+        env:
+          PROXY_URL: ${{ github.event.inputs.proxy_url || secrets.PROXY_URL || secrets.PROXIES || '' }}
+          HTTP_PROXY: ${{ secrets.HTTP_PROXY || '' }}
+          HTTPS_PROXY: ${{ secrets.HTTPS_PROXY || '' }}
+        run: |
+          BROWSER_FLAG=""
+          if [ "${{ github.event.inputs.use_browser }}" != "false" ]; then
+            BROWSER_FLAG="--use-browser"
+          fi
+
+          python wayfair_scrapy_scraper.py \
+            --input "${{ github.event.inputs.input_file || 'urls.txt' }}" \
+            --output "shard_${{ matrix.shard }}.json" \
+            --ignore-files "${{ github.event.inputs.output_file || 'wayfair_products.json' }}" \
+            --concurrency "${{ github.event.inputs.concurrency_per_runner || '4' }}" \
+            --max-urls "${{ github.event.inputs.max_urls || '0' }}" \
+            --shard-index ${{ matrix.shard }} \
+            --shard-total 15 \
+            $BROWSER_FLAG
+
+      - name: Upload Shard Artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scrapy-shard-${{ matrix.shard }}
+          path: shard_${{ matrix.shard }}.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ============================================================================
+  # 2. MERGE JOB (Combines all shards with existing 12k+ database)
+  # ============================================================================
+  merge:
+    name: Merge Shards into Consolidated Database
+    needs: scrape
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Scrapy Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download All Shard Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded_shards
+
+      - name: Merge Shards with Existing Database
+        run: |
+          echo "Consolidating all downloaded shards into final database..."
+          python wayfair_scrapy_scraper.py \
+            --merge-dir downloaded_shards \
+            --output "${{ github.event.inputs.output_file || 'wayfair_products.json' }}"
+
+      - name: Upload Final Consolidated JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: wayfair-products-scrapy-final
+          path: ${{ github.event.inputs.output_file || 'wayfair_products.json' }}
+          retention-days: 90
+
+      - name: Commit and Push Updated Results to Repository
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          out_file="${{ github.event.inputs.output_file || 'wayfair_products.json' }}"
+          git add "$out_file" || true
+          if git status --porcelain | grep -q "$out_file"; then
+            git pull --rebase origin main || true
+            git commit -m "Auto-update $out_file from Scrapy workflow [skip ci]"
+            git push origin HEAD || echo "Git push not allowed or branch protected. Database is safely preserved in GitHub artifacts."
+          else
+            echo "No changes in $out_file to commit."
+          fi
+
+      - name: Scrape Summary Report
+        run: |
+          python -c "
+          import json, os
+          out_file = '${{ github.event.inputs.output_file || 'wayfair_products.json' }}'
+          if os.path.exists(out_file):
+              with open(out_file, 'r', encoding='utf-8') as f:
+                  data = json.load(f)
+              total_records = len(data)
+              print('========================================')
+              print(f'Total Consolidated Products: {total_records}')
+              print(f'Target URLs in Database:     {total_records} / 31024')
+              print('========================================')
+          else:
+              print('Output file not found.')
+          "
