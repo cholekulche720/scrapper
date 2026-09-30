@@ -935,10 +935,10 @@ class WayfairProductSpider(scrapy.Spider):
             return
 
         with self._lock:
-            # Check SKU deduplication against existing database
-            sku = item.get("sku")
-            if sku and sku in self.tracker.skus:
-                logger.info(f"Skipping duplicate product SKU {sku} ({raw_url})")
+            # Check Canonical URL deduplication against existing database
+            norm_key = normalize_pdp_url(pdp_url).lower()
+            if norm_key in self.tracker.normalized_urls:
+                logger.info(f"Skipping already scraped canonical URL: {pdp_url}")
                 return
 
             self.tracker.mark_traversed(raw_url, item)
@@ -967,15 +967,15 @@ def save_products_to_json(
     seen_identifiers = set()
 
     def get_key(d: Dict[str, Any]):
-        sku = d.get("sku") or d.get("SKU")
-        if sku and isinstance(sku, str) and sku.strip():
-            return ("sku", sku.strip().upper())
-        for k in ["providedUrl", "pageUrl", "url"]:
+        for k in ["providedUrl", "pageUrl", "url", "provided_url", "page_url"]:
             u = d.get(k)
             if u and isinstance(u, str) and u.strip():
                 norm = normalize_pdp_url(u.strip())
                 if norm:
-                    return ("url", norm)
+                    return ("url", norm.lower())
+        sku = d.get("sku") or d.get("SKU")
+        if sku and isinstance(sku, str) and sku.strip():
+            return ("sku", sku.strip().upper())
         return ("obj", json.dumps(d, sort_keys=True))
 
     # 1. Existing database records (if appending)
