@@ -129,28 +129,14 @@ jobs:
             --merge-dir downloaded_shards \
             --output "${{ github.event.inputs.output_file || 'wayfair_products.json' }}"
 
-      - name: Upload Final Consolidated JSON
+      - name: Upload Final Consolidated JSON Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wayfair-products-scrapy-final
+          name: wayfair-scraped-products-final
           path: ${{ github.event.inputs.output_file || 'wayfair_products.json' }}
           retention-days: 90
 
-      - name: Commit and Push Updated Results to Repository
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          out_file="${{ github.event.inputs.output_file || 'wayfair_products.json' }}"
-          git add "$out_file" || true
-          if git status --porcelain | grep -q "$out_file"; then
-            git pull --rebase origin main || true
-            git commit -m "Auto-update $out_file from Scrapy workflow [skip ci]"
-            git push origin HEAD || echo "Git push not allowed or branch protected. Database is safely preserved in GitHub artifacts."
-          else
-            echo "No changes in $out_file to commit."
-          fi
-
-      - name: Scrape Summary Report
+      - name: Scrape Summary Report & Download Notice
         run: |
           python -c "
           import json, os
@@ -159,10 +145,12 @@ jobs:
               with open(out_file, 'r', encoding='utf-8') as f:
                   data = json.load(f)
               total_records = len(data)
-              print('========================================')
-              print(f'Total Consolidated Products: {total_records}')
-              print(f'Target URLs in Database:     {total_records} / 31024')
-              print('========================================')
+              print('===============================================================')
+              print(f'✅ SCRAPING & MERGE COMPLETE!')
+              print(f'📦 Total Products in Output: {total_records}')
+              print(f'📥 Download the file from GitHub Actions Artifacts: wayfair-scraped-products-final')
+              print(f'🔒 Repository was NOT modified directly. You can inspect and push manually.')
+              print('===============================================================')
           else:
               print('Output file not found.')
           "

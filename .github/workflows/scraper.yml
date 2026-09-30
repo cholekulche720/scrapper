@@ -94,27 +94,14 @@ jobs:
             --merge-dir downloaded_shards \
             --output "${{ github.event.inputs.output_file || 'wayfair_products.json' }}"
 
-      - name: Upload Final Consolidated JSON
+      - name: Upload Final Consolidated JSON Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wayfair-products-final
+          name: wayfair-zyte-scraped-products-final
           path: ${{ github.event.inputs.output_file || 'wayfair_products.json' }}
           retention-days: 90
 
-      - name: Commit and Push Updated Results to Repository
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          out_file="${{ github.event.inputs.output_file || 'wayfair_products.json' }}"
-          git add "$out_file" || true
-          if git status --porcelain | grep -q "$out_file"; then
-            git commit -m "Auto-update $out_file from scraper workflow [skip ci]"
-            git push || echo "Git push not allowed or branch protected. Consolidated database is safely stored in artifacts."
-          else
-            echo "No changes in $out_file to commit."
-          fi
-
-      - name: Scrape Summary Report
+      - name: Scrape Summary Report & Download Notice
         run: |
           python -c "
           import json, os
@@ -124,11 +111,12 @@ jobs:
                   data = json.load(f)
               total_records = len(data)
               success_count = sum(1 for item in data if 'error' not in item)
-              print('========================================')
-              print(f'Total Scraped Records: {total_records}')
-              print(f'Successful Records:   {success_count}')
-              print(f'Failed Records:       {total_records - success_count}')
-              print('========================================')
+              print('===============================================================')
+              print(f'✅ SCRAPING & MERGE COMPLETE!')
+              print(f'📦 Total Records in Output: {total_records} (Success: {success_count})')
+              print(f'📥 Download the file from GitHub Actions Artifacts: wayfair-zyte-scraped-products-final')
+              print(f'🔒 Repository was NOT modified directly. You can inspect and push manually.')
+              print('===============================================================')
           else:
               print('Output file not found.')
           "
